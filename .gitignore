@@ -1,0 +1,8 @@
+# Local state
+*.log
+*.err.log
+body*.json
+t-*.json
+providers.json
+node_modules/
+.env

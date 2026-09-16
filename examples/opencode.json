@@ -1,0 +1,19 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "cline": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Cline (local proxy)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8787/v1",
+        "apiKey": "local-proxy"
+      },
+      "models": {
+        "gpt-6-astra": { "name": "GPT-6 Astra (Cline)" },
+        "grok-4.5": { "name": "Grok 4.5 (Cline)" },
+        "glm-5.3-flash@z-ai": { "name": "GLM 5.3 Flash (free)" }
+      }
+    }
+  },
+  "model": "cline/gpt-6-astra"
+}
