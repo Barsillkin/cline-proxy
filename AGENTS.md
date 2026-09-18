@@ -21,6 +21,8 @@
 - `README.md` (русский, основной) / `README.en.md` — документация.
 - `examples/opencode.json` — пример подключения opencode.
 - `start-proxy.cmd` — запуск на Windows.
+- `start-proxy-gui.cmd` — запуск + веб-панель `http://127.0.0.1:8787/gui`
+  (статус, срок жизни токена, модели с доступностью, лог, ping-тест модели).
 
 ## Запуск и проверка
 
@@ -64,7 +66,6 @@ curl -s -X POST http://127.0.0.1:8787/v1/chat/completions -H "Content-Type: appl
   прокси извлекает `limit_reset_in`. Переключение на другую free-модель даёт новый бюджет.
 - `ENTITLEMENT_ERROR` = нужен ClinePass (`cline-pass/*` модели). 403 при этом —
   НЕ auth-ошибка, refresh не делать.
-- `region_blocked`: «not available in your region» (бывает у free-моделей).
 - Reasoning-модели (`cline-free/*`, `z-ai/glm-5.3-flash`) сначала отдают
   `delta.reasoning`. Мелкий `max_tokens` (16) съедается reasoning → шлюз вернёт
   `empty response content`. Использовать `max_tokens >= 512` или не указывать.

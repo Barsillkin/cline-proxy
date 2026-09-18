@@ -46,8 +46,12 @@ const CONFIG = {
 
 const WORKOS_PREFIX = "workos:";
 
+const recentLogs = [];
 function log(...args) {
-	console.log(new Date().toISOString(), ...args);
+	const line = [new Date().toISOString(), ...args].join(" ");
+	recentLogs.push(line);
+	if (recentLogs.length > 200) recentLogs.shift();
+	console.log(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -292,9 +296,6 @@ function buildAliasIndex(models) {
 function availabilityFields(realId) {
 	const state = modelAvailability.get(realId);
 	if (!state) return {};
-	if (state.regionBlocked) {
-		return { available: false, reason: "not available in your region" };
-	}
 	if (state.requiresSubscription) {
 		return { available: false, reason: "requires cline-pass subscription" };
 	}
@@ -425,10 +426,6 @@ function classifyGatewayMessage(message) {
 	if (text.includes("model not found")) {
 		out.code = "MODEL_NOT_FOUND";
 	}
-	if (text.includes("not available in your region")) {
-		out.code = "REGION_BLOCKED";
-		out.regionBlocked = true;
-	}
 	if (/empty response content/i.test(text)) {
 		out.emptyContent = true;
 	}
@@ -439,9 +436,7 @@ function classifyGatewayMessage(message) {
 function learnFromError(realModelId, message) {
 	if (!realModelId) return;
 	const cls = classifyGatewayMessage(message);
-	if (cls.regionBlocked) {
-		modelAvailability.set(realModelId, { regionBlocked: true });
-	} else if (cls.requiresSubscription) {
+	if (cls.requiresSubscription) {
 		modelAvailability.set(realModelId, { requiresSubscription: true });
 	} else if (cls.limitResetIn) {
 		modelAvailability.set(realModelId, { freeLimitResetIn: cls.limitResetIn });
@@ -485,7 +480,6 @@ function normalizeJsonBody(text) {
 				if (cls.limitResetIn) err.limit_reset_in = cls.limitResetIn;
 				if (cls.limitReached) err.limit_reached = true;
 				if (cls.requiresSubscription) err.requires_subscription = true;
-				if (cls.regionBlocked) err.region_blocked = true;
 				return { body: JSON.stringify({ error: err }), json };
 			}
 			if (
@@ -583,6 +577,90 @@ async function handleChat(body, res) {
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
+/** Self-contained dashboard page (no deps, no external assets). */
+function dashboardHtml() {
+	return `<!doctype html>
+<html lang="ru"><head><meta charset="utf-8">
+<title>cline-proxy — панель</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#111418;--card:#1b2027;--fg:#e6e9ee;--mut:#8b949e;--ok:#3fb950;--warn:#d29922;--err:#f85149;--acc:#58a6ff}
+*{box-sizing:border-box}body{margin:0;padding:24px;font:14px/1.5 ui-sans-serif,system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
+h1{font-size:18px;margin:0 0 4px}.sub{color:var(--mut);margin:0 0 20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-bottom:20px}
+.card{background:var(--card);border:1px solid #2d333b;border-radius:10px;padding:14px 16px}
+.card h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin:0 0 10px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:3px 0}
+.kv b{font-weight:500;color:var(--mut)}.kv span{text-align:right;font-family:ui-monospace,Consolas,monospace;font-size:13px}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.err{color:var(--err)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 10px;border-bottom:1px solid #2d333b}
+th{color:var(--mut);font-weight:500;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.tag{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;border:1px solid #2d333b}
+.tag.free{color:var(--ok)}.tag.pass{color:var(--warn)}.tag.cloud{color:var(--acc)}.tag.rec{color:var(--fg)}
+#logs{background:#0d1117;border:1px solid #2d333b;border-radius:10px;padding:12px;font:12px/1.6 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:260px;overflow:auto;color:#adbac7}
+.bar{display:flex;gap:10px;align-items:center;margin:0 0 12px;flex-wrap:wrap}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:8px 16px;font-size:13px;cursor:pointer}
+button:disabled{opacity:.5;cursor:default}
+select,input{background:var(--card);color:var(--fg);border:1px solid #2d333b;border-radius:8px;padding:7px 10px;font-size:13px}
+#pingResult{font-family:ui-monospace,Consolas,monospace;font-size:13px}
+@media (prefers-color-scheme:light){:root{--bg:#f6f8fa;--card:#fff;--fg:#1f2328;--mut:#656d76}#logs{background:#fff;color:#1f2328}}
+</style></head><body>
+<h1>cline-proxy</h1><p class="sub">Локальный OpenAI-совместимый прокси для шлюза Cline. Обновление каждые 5 с.</p>
+<div class="grid">
+ <div class="card"><h2>Статус</h2><div id="status">загрузка…</div></div>
+ <div class="card"><h2>Токен</h2><div id="token">загрузка…</div></div>
+</div>
+<div class="card" style="margin-bottom:20px"><h2>Модели</h2>
+ <div class="bar"><select id="modelSel"></select><button id="pingBtn">Ping-тест</button><span id="pingResult"></span></div>
+ <table><thead><tr><th>Алиас</th><th>Тир</th><th>Доступность</th></tr></thead><tbody id="models"></tbody></table>
+</div>
+<div class="card"><h2>Лог</h2><div id="logs">—</div></div>
+<script>
+const $=id=>document.getElementById(id);
+function key(){return localStorage.getItem('proxyKey')||''}
+function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
+async function load(){
+ let d;
+ try{
+  const r=await fetch('/gui/api',{headers:key()?{Authorization:'Bearer '+key()}:{}});
+  if(r.status===401){$('status').innerHTML='<span class="err">требуется PROXY_API_KEY</span> <input id="kin" placeholder="API key"><button onclick="saveKey()">OK</button>';return}
+  d=await r.json();
+ }catch(e){$('status').innerHTML='<span class="err">нет соединения с прокси</span>';return}
+ const exp=d.tokenExpiresAt?new Date(d.tokenExpiresAt):null;
+ const left=exp?exp-Date.now():null;
+ const expHtml=exp?left>0
+  ?'<span class="ok">'+exp.toLocaleString()+' (ещё '+Math.floor(left/3600000)+' ч '+Math.floor(left%3600000/60000)+' мин)</span>'
+  :'<span class="err">истёк — обновится при первом запросе</span>':'<span class="warn">неизвестно</span>';
+ $('status').innerHTML=kv('Шлюз',esc(d.apiBase))+kv('Аккаунт','<code>'+esc(d.accountId)+'</code>')+kv('Ключ API',d.apiKeyRequired?'включён':'не задан');
+ $('token').innerHTML=kv('Отпечаток','<code>'+esc(d.tokenFingerprint)+'</code>')+kv('Действует до',expHtml);
+ const rows=d.models.map(m=>{const avail=m.available===false?'<span class="err">'+esc(m.reason)+'</span>':'<span class="ok">доступна</span>';
+  return '<tr><td><code>'+esc(m.id)+'</code></td><td><span class="tag '+(m.tier==='recommended'?'rec':m.tier==='free'?'free':m.tier==='clinePass'?'pass':'cloud')+'">'+esc(m.tier)+'</span></td><td>'+avail+'</td></tr>'}).join('');
+ $('models').innerHTML=rows;
+ const sel=$('modelSel');const cur=sel.value;
+ sel.innerHTML=d.models.map(m=>'<option>'+esc(m.id)+'</option>').join('');
+ if(cur)sel.value=cur;
+ $('logs').textContent=(d.logs&&d.logs.length?d.logs:['—']).join('\\n');
+}
+function kv(k,v){return '<div class="kv"><b>'+k+'</b><span>'+v+'</span></div>'}
+function saveKey(){localStorage.setItem('proxyKey',$('kin').value);load()}
+$('pingBtn').onclick=async()=>{
+ $('pingBtn').disabled=true;$('pingResult').textContent='…';
+ try{
+  const r=await fetch('/v1/chat/completions',{method:'POST',
+   headers:{'Content-Type':'application/json',...(key()?{Authorization:'Bearer '+key()}:{})},
+   body:JSON.stringify({model:$('modelSel').value,messages:[{role:'user',content:'Reply with the single word: pong'}],max_tokens:512})});
+  const j=await r.json();
+  $('pingResult').innerHTML=j.choices?'<span class="ok">OK: '+esc(j.choices[0].message.content)+'</span>'
+   :'<span class="err">ошибка: '+esc(j.error?.message||JSON.stringify(j))+'</span>';
+ }catch(e){$('pingResult').innerHTML='<span class="err">'+esc(e.message)+'</span>'}
+ $('pingBtn').disabled=false;setTimeout(load,500);
+};
+load();setInterval(load,5000);
+</script></body></html>`;
+}
+
+
 
 async function route(req, res) {
 	const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
@@ -625,6 +703,34 @@ async function route(req, res) {
 			} else {
 				res.end();
 			}
+		}
+		return;
+	}
+
+	if (req.method === "GET" && path === "/gui") {
+		// Static dashboard shell; data comes from /gui/api (key-protected like the rest).
+		res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+		res.end(dashboardHtml());
+		return;
+	}
+
+	if (req.method === "GET" && path === "/gui/api") {
+		try {
+			const creds = readCredentials();
+			const models = await modelsPayload();
+			sendJson(res, 200, {
+				ok: true,
+				apiBase: CONFIG.apiBase,
+				clientType: CONFIG.clientType,
+				tokenFingerprint: fingerprint(creds.bearer),
+				tokenExpiresAt: creds.expiresAt ? new Date(creds.expiresAt).toISOString() : null,
+				accountId: creds.accountId ?? null,
+				apiKeyRequired: Boolean(CONFIG.apiKey),
+				models: models,
+				logs: recentLogs.slice(-100).reverse(),
+			});
+		} catch (error) {
+			sendJson(res, 500, { ok: false, error: error.message });
 		}
 		return;
 	}

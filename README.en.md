@@ -104,7 +104,6 @@ Recognized markers (the same ones Cline uses in
 - `ENTITLEMENT_ERROR` — no active ClinePass subscription,
 - ClinePass period limit ("The limit resets in 7d..."),
 - `MODEL_NOT_FOUND`,
-- `region_blocked` — "not available in your region",
 - `empty response content` — `max_tokens` too small for a reasoning model.
 
 HTTP status and headers (`Retry-After`, ...) are forwarded unchanged.

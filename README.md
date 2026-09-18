@@ -34,6 +34,11 @@ node proxy.mjs
 Прокси запустится на `http://127.0.0.1:8787/v1` по умолчанию. Порт меняется
 переменной окружения `PROXY_PORT`.
 
+На Windows удобнее `start-proxy-gui.cmd` (или ярлык «cline-proxy GUI» на
+рабочем столе): он запускает прокси и открывает веб-панель
+`http://127.0.0.1:8787/gui` — статус и срок жизни токена, список моделей с
+доступностью, живой лог и ping-тест любой модели одним кликом.
+
 Быстрая проверка:
 
 ```powershell
@@ -49,6 +54,7 @@ curl http://127.0.0.1:8787/v1/models
 | Метод | Путь | Что делает |
 |---|---|---|
 | GET | `/health` | статус прокси, отпечаток/срок токена, accountId |
+| GET | `/gui` | веб-панель (данные: `/gui/api`) |
 | GET | `/v1/models` | список моделей из фида Cline с разметкой тиров и доступности |
 | POST | `/v1/chat/completions` | чат: стрим (SSE) и без стрима, tools/function-calling |
 
@@ -105,7 +111,6 @@ curl http://127.0.0.1:8787/v1/models
 - `ENTITLEMENT_ERROR` — подписка ClinePass не активна,
 - лимит ClinePass («The limit resets in 7d…»),
 - `MODEL_NOT_FOUND`,
-- `region_blocked` — «not available in your region»,
 - `empty response content` — слишком маленький `max_tokens` у reasoning-модели.
 
 HTTP-статус и заголовки (`Retry-After` и прочие) передаются без изменений.
