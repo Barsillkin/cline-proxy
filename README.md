@@ -1,62 +1,60 @@
 # cline-proxy
 
-A tiny local proxy that exposes your **Cline account** as a plain
-**OpenAI-compatible API** (`/v1/chat/completions`, `/v1/models`), so any client
-that speaks OpenAI — opencode, Zed, Continue, your own scripts — can use the
-models available to your Cline login.
+Локальный прокси, который превращает ваш аккаунт Cline в обычный
+**OpenAI-совместимый API** (`/v1/chat/completions`, `/v1/models`), чтобы им
+мог воспользоваться любой клиент, понимающий OpenAI: opencode, Zed, Continue,
+собственные скрипты и т.д.
 
 ```
-any OpenAI client ──►  http://127.0.0.1:8787/v1/chat/completions
-                          │  proxy injects your Cline credentials
-                          ▼
-                 https://api.cline.bot/api/v1/chat/completions
-                     Authorization: Bearer workos:<your token>
+любой клиент ──►  http://127.0.0.1:8787/v1/chat/completions
+                   │  прокси подставляет ваши Cline-креды
+                   ▼
+          https://api.cline.bot/api/v1/chat/completions
+              Authorization: Bearer workos:<ваш токен>
 ```
 
-- **Zero dependencies**, single file, Node >= 18.
-- Reads the OAuth tokens Cline already stores on disk (`providers.json`),
-  refreshes them automatically, and writes rotated tokens back.
-- Handles Cline gateway quirks: `{success,data}` response envelope, reasoning
-  models, `max_tokens` → `max_completion_tokens`, per-model free-tier limits.
+- **Один файл**, без зависимостей, Node >= 18.
+- Читает OAuth-токены, которые Cline уже хранит на диске (`providers.json`),
+  обновляет их по истечении и пишет восстановленные токены обратно.
+- Работает с HTTP-флоу Cline: стрим (SSE) и без стрима, tools/function-calling,
+  автоматическое обновление токена перед истечением.
 
-> [!WARNING]
-> This tool drives your own Cline subscription through third-party clients.
-> That may violate the Cline Terms of Service and can lead to rate limits or
-> account suspension. Everything runs locally on your machine, uses your own
-> credentials, and sends nothing anywhere except `api.cline.bot` — but the
-> decision to use it is yours.
+> ⚠️ **Дисклеймер.** Это неофициальный инструмент. Вы фактически используете
+> свою подписку Cline через сторонний клиент, что может нарушать условия
+> обслуживания Cline и приводить к лимитам или блокировке. Всё работает на вашей
+> машине, используются только ваши данные, и ничего не уходит к Cline, кроме
+> запросов к `api.cline.bot`. Решение использовать — ваше.
 
-## Requirements
-
-- Node.js >= 18 (no `npm install` needed)
-- A Cline account logged in via the Cline desktop app or CLI
-  (the proxy reads `%USERPROFILE%\.cline\data\settings\providers.json`)
-
-## Quick start
+## Запуск
 
 ```powershell
-node proxy.mjs            # listens on http://127.0.0.1:8787/v1
+node proxy.mjs
 ```
+
+Прокси запустится на `http://127.0.0.1:8787/v1` по умолчанию. Порт меняется
+переменной окружения `PROXY_PORT`.
+
+Быстрая проверка:
 
 ```powershell
 curl http://127.0.0.1:8787/health
 curl http://127.0.0.1:8787/v1/models
 ```
 
-`/health` shows the token fingerprint (first 12 hex chars of its SHA-256), the
-expiry time and the account id — never the token itself.
+`/health` показывает отпечаток токена (первые 12 символов SHA-256), время
+истечения и `accountId` — сам токен нигде не пишется.
 
-## Endpoints
+## Эндпоинты
 
-| Method | Path | Description |
+| Метод | Путь | Что делает |
 |---|---|---|
-| GET | `/health` | status, token fingerprint/expiry, account id |
-| GET | `/v1/models` | model list from the Cline feed, with tier metadata |
-| POST | `/v1/chat/completions` | chat, streaming (SSE) and non-streaming, tools |
+| GET | `/health` | статус прокси, отпечаток/срок токена, accountId |
+| GET | `/v1/models` | список моделей из фида Cline с разметкой тиров и доступности |
+| POST | `/v1/chat/completions` | чат: стрим (SSE) и без стрима, tools/function-calling |
 
-## Models
+## Модели
 
-`/v1/models` returns entries like:
+`/v1/models` отдаёт записи вида:
 
 ```json
 {
@@ -69,21 +67,25 @@ expiry time and the account id — never the token itself.
 }
 ```
 
-- `tier` comes from the live Cline recommended-models feed
-  (`recommended` / `free` / `clinePass` / `clineCloud`) — nothing is hardcoded.
-- Ids are slash-free aliases so clients that split on `/` keep working. When the
-  same name exists in several tiers, the alias is suffixed with the origin:
-  `deepseek-v4.1-flash@cline-free` vs `deepseek-v4.1-flash@cline-pass`.
-  Full gateway ids also work as request `model` values.
-- The proxy remembers real gateway rejections per model and annotates the list:
-  `"available": false, "reason": "requires cline-pass subscription"` or
-  `"reason": "free limit reached, resets in 21h 59m"` (in-memory, per process).
-- Set `PROXY_EXPOSE_FULL_IDS=1` to also list the full gateway ids.
+- Тип модели (`tier`) берётся из живого фида Cline
+  (`https://api.cline.bot/api/v1/ai/cline/recommended-models`):
+  типы `recommended / free / clinePass / clineCloud`. **Ничего не захардкожено.**
+- `id` — алиас без слешей, чтобы клиенты, разбивающие модель по слешу, работали.
+  Если одно имя встречается в нескольких тирах, к алиасу добавляется суффикс
+  `@origin`, например `glm-5.3-flash@z-ai`, `deepseek-v4.1-flash@cline-free`,
+  `deepseek-v4.1-flash@cline-pass`. Полные идентификаторы Cline
+  (`z-ai/glm-5.3-flash` и т.п.) тоже принимаются как `model` в запросе.
+- Прокси **запоминает** реальные отказы шлюза и помечает модель в списке:
+  `"available": false, "reason": "requires cline-pass subscription"` или
+  `"reason": "free limit reached, resets in 21h 59m"` (хранится в памяти
+  процесса, сбрасывается при перезапуске).
+- Установите `PROXY_EXPOSE_FULL_IDS=1`, чтобы `/v1/models` дополнительно
+  отдавал полные идентификаторы Cline.
+## Прозрачная ошибка шлюза
 
-## Error passthrough
-
-Gateway errors are never swallowed. The message (which embeds the reset time)
-is passed through verbatim, plus structured fields are extracted:
+Прокси **не глотает и не подменяет** ответы шлюза. Сообщение проходит целиком
+(в нём обычно указано время сброса), а прокси дополнительно вытаскивает
+структурированные поля:
 
 ```json
 {
@@ -97,17 +99,22 @@ is passed through verbatim, plus structured fields are extracted:
 }
 ```
 
-Recognized markers (from the Cline SDK's own `providers/errors.ts`):
-`INFERENCE_CAP_ERROR` (free-tier limit), `ENTITLEMENT_ERROR` (no ClinePass
-subscription), ClinePass period limits ("The limit resets in 7d…"),
-`model not found`. HTTP status and headers (`Retry-After`, …) are forwarded
-unchanged.
+Распознаются типичные ответы (по маркерам из `sdk/packages/llms/src/providers/errors.ts`
+самого Cline):
+- `INFERENCE_CAP_ERROR` — дневной free-лимит конкретной модели,
+- `ENTITLEMENT_ERROR` — подписка ClinePass не активна,
+- лимит ClinePass («The limit resets in 7d…»),
+- `MODEL_NOT_FOUND`,
+- `region_blocked` — «not available in your region»,
+- `empty response content` — слишком маленький `max_tokens` у reasoning-модели.
 
-## Client configuration
+HTTP-статус и заголовки (`Retry-After` и прочие) передаются без изменений.
+
+## Конфигурация клиентов
 
 ### opencode
 
-See [`examples/opencode.json`](examples/opencode.json):
+См. [`examples/opencode.json`](examples/opencode.json):
 
 ```json
 {
@@ -130,69 +137,89 @@ See [`examples/opencode.json`](examples/opencode.json):
 }
 ```
 
-### Any other OpenAI-compatible client
+### Любой другой OpenAI-совместимый клиент
 
 - Base URL: `http://127.0.0.1:8787/v1`
-- API key: anything (or your `PROXY_API_KEY`, see below)
-- Model: any id from `/v1/models`
+- API-ключ: любой (или свой `PROXY_API_KEY` — см. ниже)
+- Модель: любой `id` из `/v1/models`
 
-## Configuration (environment variables)
+## Конфигурация самого прокси
 
-| Variable | Default | Description |
+Всё задаётся переменными окружения. По умолчанию работает «из коробки», если
+прокси запускается на машине с установленным Cline.
+
+| Переменная | По умолчанию | Что означает |
 |---|---|---|
-| `PROXY_PORT` | `8787` | listen port |
-| `PROXY_HOST` | `127.0.0.1` | bind address (keep it local!) |
-| `PROXY_API_KEY` | unset | if set, clients must send it as `Authorization: Bearer <key>` |
-| `CLINE_PROVIDERS_PATH` | `%USERPROFILE%\.cline\data\settings\providers.json` | credentials file |
-| `CLINE_DATA_DIR` | `%USERPROFILE%\.cline\data` | alternative to the path above |
-| `CLINE_API_BASE` | `https://api.cline.bot/api/v1` | gateway base URL (e.g. staging) |
-| `CLINE_CLIENT_TYPE` | `cline-desktop` | `X-CLIENT-TYPE` sent to the gateway |
-| `CLINE_REFRESH_BUFFER_MS` | `300000` | refresh the access token this long before expiry |
-| `PROXY_EXPOSE_FULL_IDS` | `0` | `1` = also list full gateway ids in `/v1/models` |
-| `PROXY_REQUEST_TIMEOUT_MS` | `0` | upstream timeout (0 = none, needed for streams) |
+| `PROXY_PORT` | `8787` | порт сервера |
+| `PROXY_HOST` | `127.0.0.1` | адрес (оставляйте локальным!) |
+| `PROXY_API_KEY` | не установлено | если задан, клиент обязан отправить `Authorization: Bearer <ключ>` |
+| `CLINE_PROVIDERS_PATH` | `%USERPROFILE%\.cline\data\settings\providers.json` | файл с OAuth-данными |
+| `CLINE_DATA_DIR` | `%USERPROFILE%\.cline\data` | альтернатива для пути выше |
+| `CLINE_API_BASE` | `https://api.cline.bot/api/v1` | база шлюза (`apiBase`) |
+| `CLINE_CLIENT_TYPE` | `cline-desktop` | заголовок `X-CLIENT-TYPE`, который прокси шлёт шлюзу |
+| `CLINE_REFRESH_BUFFER_MS` | `300000` (5 мин) | обновлять access-токен за столько до истечения |
+| `PROXY_EXPOSE_FULL_IDS` | `0` | `1` — дополнительно отдавать полные Cline-идентификаторы в `/v1/models` |
+| `PROXY_REQUEST_TIMEOUT_MS` | `0` (нет) | таймаут к шлюзу (0 = без ограничения, нужно для стрима) |
 
-## Good to know
+## Важные нюансы
 
-- **Reasoning models.** Free models (`cline-free/*`, `z-ai/glm-5.3-flash`, …)
-  emit reasoning tokens first (`delta.reasoning`), then the visible answer
-  (`delta.content`). A tiny `max_tokens` (e.g. 16) gets consumed by reasoning
-  and the gateway returns `empty response content` — use `max_tokens >= 512` or
-  omit it. The proxy annotates that error with a hint.
-  For OpenAI reasoning-era models (o1/o3/o4, gpt-5) it renames
-  `max_tokens` → `max_completion_tokens`, exactly like Cline does.
-- **Free-tier limits are per model.** The error reads "Daily free limit reached
-  **on model** …", so when one free model is capped you can switch to another.
-- **Single-use refresh tokens.** Cline rotates the refresh token on every
-  refresh. The proxy re-reads `providers.json` right before refreshing and
-  writes new tokens back, so it coexists with the app/CLI — but a simultaneous
-  refresh from both sides can still invalidate the session (re-login fixes it).
-- **Gateway errors are visible.** Nothing is retried into silence; you always
-  see the real reason, including the reset time.
+- **Reasoning-модели.** Free-модели (`cline-free/*`, `z-ai/glm-5.3-flash` и др.)
+  сначала генерируют reasoning-токены (`delta.reasoning`), потом видимый текст
+  (`delta.content`). Если задать очень маленький `max_tokens` (например 16),
+  весь бюджет уйдёт на reasoning, `content` останется пустым, шлюз вернёт
+  `empty response content`, а прокси добавит в текст ошибки подсказку.
+  Рекомендация: `max_tokens >= 512` либо не указывать его вовсе.
+  Для моделей эпохи OpenAI reasoning (o1/o3/o4, gpt-5) прокси сам переименовывает
+  `max_tokens` → `max_completion_tokens`, как это делает Cline.
+- **Free-лимит — на каждую модель отдельно.** Ошибка формулируется
+  «Daily free limit reached **on model** …», поэтому когда одна free-модель
+  исчерпала дневной бюджет, можно переключиться на другую
+  (например с `cline-free/deepseek-v4.1-flash` на `z-ai/glm-5.3-flash`).
+- **Single-use refresh-токены.** Cline меняет refresh-токен при каждом обновлении.
+  Прокси перед refresh перечитывает `providers.json` и пишет новые токены обратно,
+  поэтому совместим с приложением/CLI. Но если обновление произойдёт одновременно
+  и в прокси, и в Cline — возможен logout (лечится повторным входом).
+- **Ошибки шлюза видны.** Ничто не ретраит в тишину: вы всегда видите реальную
+  причину, включая время сброса лимита.
 
-## Security
+## Безопасность
 
-- Listens on `127.0.0.1` only; remote connections are refused.
-- The Cline token never appears in logs (only a SHA-256 fingerprint) and is not
-  accepted from clients — clients authenticate with any key, or with
-  `PROXY_API_KEY` if you set one.
-- Without `PROXY_API_KEY`, **any local process** can spend your credits. Set a
-  key for daily use.
+- Слушает только `127.0.0.1`; удалённые подключения отклоняются.
+- Cline-токен нигде не пишется в лог (только усечённый отпечаток) и не принимается
+  от клиентов — клиенты аутентифицируются любым ключом или `PROXY_API_KEY`.
+- Если `PROXY_API_KEY` **не** задан, любой локальный процесс может тратить ваши
+  кредиты. Для постоянного использования задавайте ключ.
+- В репозиторий не попадают логи, тестовые `body*.json` и `providers.json`.
 
-## Troubleshooting
+## Устранение проблем
 
-| Symptom | Cause / fix |
+| Симптом | Причина / исправление |
 |---|---|
-| `ENTITLEMENT_ERROR` / "not subscribed to required model plan" | the model needs a ClinePass subscription — pick a `free: true` model |
-| `INFERENCE_CAP_ERROR` with `limit_reset_in` | daily free-tier limit for that model; wait for the reset or switch to another free model |
-| `empty response content` | `max_tokens` too small for a reasoning model — raise it (>= 512) or drop it |
-| `Token refresh failed (401)` | the refresh token was rotated elsewhere — re-login in the Cline app |
-| Proxy starts but clients get connection refused | another instance is running on the port, or a firewall blocks localhost |
+| `ENTITLEMENT_ERROR` / «not subscribed to required model plan» | модель требует ClinePass — выберите модель с `free: true` |
+| `INFERENCE_CAP_ERROR` + `limit_reset_in` | дневной free-лимит этой модели — подождать сброс или переключиться на другую free-модель |
+| `empty response content` | `max_tokens` слишком мал для reasoning-модели — поднимите (>= 512) или уберите |
+| `Token refresh failed (401)` | refresh-токен изменили в другом месте — войдите в Cline заново |
+| Прокси запустился, но клиент пишет connection refused | на порту висит другой сервис, или локальный фаервол блокирует localhost |
 
-## Disclaimer
+## Структура репозитория
 
-This is an unofficial community tool, not affiliated with or endorsed by Cline.
-Use at your own risk and in accordance with the Cline Terms of Service.
+```
+cline-proxy\
+├── proxy.mjs               # сам прокси (единственный файл логики)
+├── README.md               # основной README (русский)
+├── README.en.md            # английский вариант README
+├── LICENSE                 # MIT
+├── .gitignore              # логи, тестовые body*.json, providers.json, node_modules
+└── examples/
+    └── opencode.json       # пример конфигурации opencode
+```
 
-## License
+## Английская версия
+
+См. [`README.en.md`](README.en.md) — сжатый, но полный английский вариант той же
+информации.
+
+## Лицензия
 
 [MIT](LICENSE)
+
