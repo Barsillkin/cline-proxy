@@ -292,6 +292,9 @@ function buildAliasIndex(models) {
 function availabilityFields(realId) {
 	const state = modelAvailability.get(realId);
 	if (!state) return {};
+	if (state.regionBlocked) {
+		return { available: false, reason: "not available in your region" };
+	}
 	if (state.requiresSubscription) {
 		return { available: false, reason: "requires cline-pass subscription" };
 	}
@@ -422,6 +425,10 @@ function classifyGatewayMessage(message) {
 	if (text.includes("model not found")) {
 		out.code = "MODEL_NOT_FOUND";
 	}
+	if (text.includes("not available in your region")) {
+		out.code = "REGION_BLOCKED";
+		out.regionBlocked = true;
+	}
 	if (/empty response content/i.test(text)) {
 		out.emptyContent = true;
 	}
@@ -432,7 +439,9 @@ function classifyGatewayMessage(message) {
 function learnFromError(realModelId, message) {
 	if (!realModelId) return;
 	const cls = classifyGatewayMessage(message);
-	if (cls.requiresSubscription) {
+	if (cls.regionBlocked) {
+		modelAvailability.set(realModelId, { regionBlocked: true });
+	} else if (cls.requiresSubscription) {
 		modelAvailability.set(realModelId, { requiresSubscription: true });
 	} else if (cls.limitResetIn) {
 		modelAvailability.set(realModelId, { freeLimitResetIn: cls.limitResetIn });
@@ -476,6 +485,7 @@ function normalizeJsonBody(text) {
 				if (cls.limitResetIn) err.limit_reset_in = cls.limitResetIn;
 				if (cls.limitReached) err.limit_reached = true;
 				if (cls.requiresSubscription) err.requires_subscription = true;
+				if (cls.regionBlocked) err.region_blocked = true;
 				return { body: JSON.stringify({ error: err }), json };
 			}
 			if (
