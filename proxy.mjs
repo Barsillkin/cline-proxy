@@ -47,6 +47,7 @@ const CONFIG = {
 const WORKOS_PREFIX = "workos:";
 
 const recentLogs = [];
+const processStartTime = new Date().toISOString();
 function log(...args) {
 	const line = [new Date().toISOString(), ...args].join(" ");
 	recentLogs.push(line);
@@ -432,6 +433,29 @@ function classifyGatewayMessage(message) {
 	return out;
 }
 
+/**
+ * Session usage accounting, per resolved model. `cost` is the gateway's
+ * list-price figure from `usage.cost` — informational on free models, an
+ * actual spend on paid ones.
+ */
+const usageStats = new Map();
+function recordUsage(modelId, usage) {
+	if (!modelId || !usage || typeof usage !== "object") return;
+	const s = usageStats.get(modelId) ?? {
+		requests: 0,
+		promptTokens: 0,
+		completionTokens: 0,
+		cost: 0,
+		updatedAt: 0,
+	};
+	s.requests += 1;
+	s.promptTokens += Number(usage.prompt_tokens) || 0;
+	s.completionTokens += Number(usage.completion_tokens) || 0;
+	s.cost += Number(usage.cost) || 0;
+	s.updatedAt = Date.now();
+	usageStats.set(modelId, s);
+}
+
 /** Remember what a failed model told us, to annotate /v1/models. */
 function learnFromError(realModelId, message) {
 	if (!realModelId) return;
@@ -496,7 +520,7 @@ function normalizeJsonBody(text) {
 	return { body: text, json: undefined };
 }
 
-async function pipeUpstream(upstream, res) {
+async function pipeUpstream(upstream, res, modelId) {
 	const headers = passthroughHeaders(upstream);
 	const contentType = String(upstream.headers.get("content-type") || "");
 	const isJson = contentType.includes("application/json") && !contentType.includes("event-stream");
@@ -516,8 +540,26 @@ async function pipeUpstream(upstream, res) {
 		res.end();
 		return undefined;
 	}
-	for await (const chunk of upstream.body) res.write(chunk);
+	const sseText = [];
+	for await (const chunk of upstream.body) {
+		const text = Buffer.from(chunk).toString("utf8");
+		sseText.push(text);
+		res.write(chunk);
+	}
 	res.end();
+	// Usage chunk (stream_options.include_usage): scan `data: {...,"usage":{...}}`.
+	const sse = sseText.join("").slice(-65536);
+	for (const m of sse.matchAll(/^data: ?(.+)$/gm)) {
+		const line = m[1].trim();
+		if (!line || line === "[DONE]") continue;
+		try {
+			const j = JSON.parse(line);
+			const usage = j.usage ?? j.response?.usage;
+			if (usage) recordUsage(modelId, usage);
+		} catch {
+			// Non-JSON data line — ignore.
+		}
+	}
 	return undefined;
 }
 
@@ -567,10 +609,16 @@ async function handleChat(body, res) {
 	log(
 		`chat: model=${payload.model} stream=${payload.stream === true} status=${upstream.status} ${Date.now() - started}ms`,
 	);
-	const parsed = await pipeUpstream(upstream, res);
+	const parsed = await pipeUpstream(upstream, res, payload.model);
 	if (parsed?.error?.message) {
 		learnFromError(payload.model, parsed.error.message);
 		log(`gateway error for ${payload.model}: code=${parsed.error.code ?? "none"} message=${parsed.error.message}`);
+	} else if (parsed) {
+		const usage = parsed?.data?.usage ?? parsed?.usage;
+		if (usage) {
+			recordUsage(payload.model, usage);
+			log(`usage: model=${payload.model} in=${usage.prompt_tokens ?? "?"} out=${usage.completion_tokens ?? "??"} cost=${usage.cost ?? 0}`);
+		}
 	}
 }
 
@@ -610,6 +658,7 @@ select,input{background:var(--card);color:var(--fg);border:1px solid #2d333b;bor
 <div class="grid">
  <div class="card"><h2>Статус</h2><div id="status">загрузка…</div></div>
  <div class="card"><h2>Токен</h2><div id="token">загрузка…</div></div>
+ <div class="card"><h2>Расход (сессия)</h2><div id="usage">—</div></div>
 </div>
 <div class="card" style="margin-bottom:20px"><h2>Модели</h2>
  <div class="bar"><select id="modelSel"></select><button id="pingBtn">Ping-тест</button><span id="pingResult"></span></div>
@@ -634,6 +683,13 @@ async function load(){
   :'<span class="err">истёк — обновится при первом запросе</span>':'<span class="warn">неизвестно</span>';
  $('status').innerHTML=kv('Шлюз',esc(d.apiBase))+kv('Аккаунт','<code>'+esc(d.accountId)+'</code>')+kv('Ключ API',d.apiKeyRequired?'включён':'не задан');
  $('token').innerHTML=kv('Отпечаток','<code>'+esc(d.tokenFingerprint)+'</code>')+kv('Действует до',expHtml);
+ if(d.usage&&d.usage.length){
+  const tot=d.usage.reduce((a,u)=>({r:a.r+u.requests,p:a.p+u.promptTokens,c:a.c+u.completionTokens,cost:a.cost+u.cost}),{r:0,p:0,c:0,cost:0});
+  const rows=d.usage.map(u=>'<tr><td><code>'+esc(u.model)+'</code></td><td>'+u.requests+'</td><td>'+u.promptTokens+'</td><td>'+u.completionTokens+'</td><td>$'+u.cost.toFixed(6)+'</td></tr>').join('');
+  $('usage').innerHTML='<table><thead><tr><th>Модель</th><th>Запросы</th><th>In</th><th>Out</th><th>Cost*</th></tr></thead><tbody>'+rows+
+   '<tr><td><b>Итого</b></td><td><b>'+tot.r+'</b></td><td><b>'+tot.p+'</b></td><td><b>'+tot.c+'</b></td><td><b>$'+tot.cost.toFixed(6)+'</b></td></tr></tbody></table>'+
+   '<div style="color:var(--mut);font-size:11px;margin-top:6px">* стоимость по прейскуранту шлюза; на free-моделях — не списание. <a href="#" onclick="fetch(\'/gui/usage/reset\',{method:\'POST\'}).then(load);return false" style="color:var(--acc)">сбросить</a> · с '+new Date(d.startedAt).toLocaleTimeString()+'</div>';
+ } else $('usage').innerHTML='— <span style="color:var(--mut);font-size:12px">запросов пока не было</span>';
  const rows=d.models.map(m=>{const avail=m.available===false?'<span class="err">'+esc(m.reason)+'</span>':'<span class="ok">доступна</span>';
   return '<tr><td><code>'+esc(m.id)+'</code></td><td><span class="tag '+(m.tier==='recommended'?'rec':m.tier==='free'?'free':m.tier==='clinePass'?'pass':'cloud')+'">'+esc(m.tier)+'</span></td><td>'+avail+'</td></tr>'}).join('');
  $('models').innerHTML=rows;
@@ -728,10 +784,20 @@ async function route(req, res) {
 				apiKeyRequired: Boolean(CONFIG.apiKey),
 				models: models,
 				logs: recentLogs.slice(-100).reverse(),
+				usage: [...usageStats.entries()]
+					.map(([id, s]) => ({ model: id, ...s }))
+					.sort((a, b) => b.cost - a.cost || b.requests - a.requests),
+				startedAt: processStartTime,
 			});
 		} catch (error) {
 			sendJson(res, 500, { ok: false, error: error.message });
 		}
+		return;
+	}
+
+	if (req.method === "POST" && path === "/gui/usage/reset") {
+		usageStats.clear();
+		sendJson(res, 200, { ok: true });
 		return;
 	}
 
