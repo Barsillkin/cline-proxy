@@ -688,7 +688,7 @@ async function load(){
   const rows=d.usage.map(u=>'<tr><td><code>'+esc(u.model)+'</code></td><td>'+u.requests+'</td><td>'+u.promptTokens+'</td><td>'+u.completionTokens+'</td><td>$'+u.cost.toFixed(6)+'</td></tr>').join('');
   $('usage').innerHTML='<table><thead><tr><th>Модель</th><th>Запросы</th><th>In</th><th>Out</th><th>Cost*</th></tr></thead><tbody>'+rows+
    '<tr><td><b>Итого</b></td><td><b>'+tot.r+'</b></td><td><b>'+tot.p+'</b></td><td><b>'+tot.c+'</b></td><td><b>$'+tot.cost.toFixed(6)+'</b></td></tr></tbody></table>'+
-   '<div style="color:var(--mut);font-size:11px;margin-top:6px">* стоимость по прейскуранту шлюза; на free-моделях — не списание. <a href="#" onclick="fetch(\'/gui/usage/reset\',{method:\'POST\'}).then(load);return false" style="color:var(--acc)">сбросить</a> · с '+new Date(d.startedAt).toLocaleTimeString()+'</div>';
+   '<div style="color:var(--mut);font-size:11px;margin-top:6px">* стоимость по прейскуранту шлюза; на free-моделях — не списание. <a href="#" id="resetUsage" style="color:var(--acc)">сбросить</a> · с '+new Date(d.startedAt).toLocaleTimeString()+'</div>';
  } else $('usage').innerHTML='— <span style="color:var(--mut);font-size:12px">запросов пока не было</span>';
  const rows=d.models.map(m=>{const avail=m.available===false?'<span class="err">'+esc(m.reason)+'</span>':'<span class="ok">доступна</span>';
   return '<tr><td><code>'+esc(m.id)+'</code></td><td><span class="tag '+(m.tier==='recommended'?'rec':m.tier==='free'?'free':m.tier==='clinePass'?'pass':'cloud')+'">'+esc(m.tier)+'</span></td><td>'+avail+'</td></tr>'}).join('');
@@ -713,6 +713,9 @@ $('pingBtn').onclick=async()=>{
  $('pingBtn').disabled=false;setTimeout(load,500);
 };
 load();setInterval(load,5000);
+document.addEventListener('click',e=>{
+ if(e.target&&e.target.id==='resetUsage'){e.preventDefault();fetch('/gui/usage/reset',{method:'POST'}).then(load)}
+});
 </script></body></html>`;
 }
 
